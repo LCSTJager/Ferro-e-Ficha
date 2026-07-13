@@ -196,6 +196,11 @@ const STORES = ['gyms','workouts','sessions'];
 
 function uid(){ return (crypto.randomUUID ? crypto.randomUUID() : 'id-'+Date.now()+'-'+Math.random().toString(16).slice(2)); }
 
+function plannedSummary(plannedSets){
+  if(!plannedSets || !plannedSets.length) return 'sem séries definidas';
+  return plannedSets.length+' séries: '+plannedSets.map(s=> s.weight!==''&&s.weight!=null ? `${s.reps}×${s.weight}kg` : `${s.reps}reps`).join(', ');
+}
+
 let _dbPromise = null;
 function openDB(){
   if(_dbPromise) return _dbPromise;
@@ -429,20 +434,16 @@ function renderDashboard(){
 }
 
 function openStartWorkoutModal(){
-  if(!state.workouts.length){
-    toast('Cadastre um treino primeiro.','error');
-    navigate('workouts');
-    return;
-  }
   openModal(`
     <div class="modal-head"><h2>Escolher treino</h2><button class="icon-btn" onclick="closeModal()">✕</button></div>
-    <div class="grid" style="gap:10px;">
-      ${state.workouts.map(w=>`
+    <div class="grid" style="gap:10px;margin-bottom:14px;">
+      ${state.workouts.length ? state.workouts.map(w=>`
         <div class="list-item" style="cursor:pointer" onclick="startSession('${w.id}')">
           <div class="main"><h3>${escapeHtml(w.name)}</h3><div class="faint">${escapeHtml(w.category)} · ${w.exercises.length} exercícios</div></div>
           <span>▶️</span>
-        </div>`).join('')}
+        </div>`).join('') : `<div class="faint">Nenhuma ficha cadastrada ainda.</div>`}
     </div>
+    <button class="btn btn-block" onclick="startEmptySession()">🆓 Iniciar treino vazio (sem ficha)</button>
   `);
 }
 
@@ -545,7 +546,7 @@ function renderExerciseList(){
       <div class="top">
         <div>
           <strong>${escapeHtml(ex.name)}</strong>
-          <div class="meta">${escapeHtml(ex.muscleGroup)} · ${ex.plannedSets}x${ex.plannedReps}${ex.plannedLoad?' · '+ex.plannedLoad+'kg':''}</div>
+          <div class="meta">${escapeHtml(ex.muscleGroup)} · ${plannedSummary(ex.plannedSets)}</div>
         </div>
         <div class="row">
           <div class="reorder-btns">
@@ -573,37 +574,68 @@ function removeExercise(i){
   renderExerciseList();
 }
 
+let _exDraftSets = [];
+let _exDraftId = null;
+
 function openExerciseEditor(index){
   const ex = (index!=null) ? state.editingWorkoutDraft.exercises[index] : {
-    id:uid(), name:'', muscleGroup:MUSCLE_GROUPS[0], plannedSets:3, plannedReps:10, plannedLoad:'', notes:''
+    id:uid(), name:'', muscleGroup:MUSCLE_GROUPS[0], plannedSets:[{reps:10,weight:''}], notes:''
   };
+  _exDraftId = ex.id;
+  _exDraftSets = JSON.parse(JSON.stringify(ex.plannedSets));
   const formHtml = `
     <div class="modal-head"><h2>${index!=null?'Editar exercício':'Novo exercício'}</h2><button class="icon-btn" onclick="renderWorkoutEditorModal()">✕</button></div>
     <div class="field"><label>Nome</label><input id="ex-name" value="${escapeAttr(ex.name)}" placeholder="Ex: Supino reto"></div>
     <div class="field"><label>Grupo muscular</label>
       <select id="ex-muscle">${MUSCLE_GROUPS.map(m=>`<option ${ex.muscleGroup===m?'selected':''}>${m}</option>`).join('')}</select>
     </div>
-    <div class="grid grid-3">
-      <div class="field"><label>Séries</label><input id="ex-sets" type="number" min="1" value="${ex.plannedSets}"></div>
-      <div class="field"><label>Repetições</label><input id="ex-reps" type="number" min="1" value="${ex.plannedReps}"></div>
-      <div class="field"><label>Carga (kg, opcional)</label><input id="ex-load" type="number" step="0.5" value="${ex.plannedLoad||''}"></div>
+    <label>Séries planejadas <span class="faint" style="text-transform:none;">(cada série pode ter peso e reps diferentes — ex: pirâmide)</span></label>
+    <div class="set-row" style="grid-template-columns:28px 1fr 1fr 32px;margin-bottom:4px;">
+      <span></span><span>Reps</span><span>Peso (kg)</span><span></span>
     </div>
+    <div id="ex-sets-list"></div>
+    <button class="btn btn-sm" style="margin:6px 0 12px;" onclick="addDraftSet()">+ Adicionar série</button>
     <div class="field"><label>Observações</label><textarea id="ex-notes">${escapeHtml(ex.notes||'')}</textarea></div>
     <button class="btn btn-primary btn-block" onclick="saveExercise(${index!=null?index:'null'})">Salvar exercício</button>
   `;
   openModal(formHtml);
+  renderDraftSetsList();
+}
+
+function renderDraftSetsList(){
+  const wrap = document.getElementById('ex-sets-list');
+  if(!wrap) return;
+  wrap.innerHTML = _exDraftSets.map((s,i)=>`
+    <div class="set-row" style="grid-template-columns:28px 1fr 1fr 32px;">
+      <span>${i+1}</span>
+      <input type="number" min="1" value="${s.reps}" onchange="updateDraftSet(${i},'reps',this.value)">
+      <input type="number" step="0.5" value="${s.weight}" onchange="updateDraftSet(${i},'weight',this.value)">
+      <button class="btn btn-sm btn-danger" ${_exDraftSets.length<=1?'disabled':''} onclick="removeDraftSet(${i})">✕</button>
+    </div>
+  `).join('');
+}
+function updateDraftSet(i,field,value){
+  _exDraftSets[i][field] = field==='weight' ? value : (parseInt(value)||1);
+}
+function addDraftSet(){
+  const last = _exDraftSets[_exDraftSets.length-1];
+  _exDraftSets.push({reps:last?last.reps:10, weight:last?last.weight:''});
+  renderDraftSetsList();
+}
+function removeDraftSet(i){
+  if(_exDraftSets.length<=1) return;
+  _exDraftSets.splice(i,1);
+  renderDraftSetsList();
 }
 
 function saveExercise(index){
   const name = document.getElementById('ex-name').value.trim();
   if(!name){ toast('Dê um nome ao exercício.','error'); return; }
   const ex = {
-    id: index!=null ? state.editingWorkoutDraft.exercises[index].id : uid(),
+    id: _exDraftId,
     name,
     muscleGroup: document.getElementById('ex-muscle').value,
-    plannedSets: parseInt(document.getElementById('ex-sets').value)||1,
-    plannedReps: parseInt(document.getElementById('ex-reps').value)||1,
-    plannedLoad: document.getElementById('ex-load').value || '',
+    plannedSets: _exDraftSets.map(s=>({reps:parseInt(s.reps)||1, weight: s.weight===''||s.weight==null ? '' : parseFloat(s.weight)})),
     notes: document.getElementById('ex-notes').value.trim(),
   };
   if(index!=null) state.editingWorkoutDraft.exercises[index] = ex;
@@ -699,10 +731,22 @@ function startSession(workoutId){
     startTime: new Date().toISOString(),
     exercises: w.exercises.map(e=>({
       exerciseId:e.id, name:e.name, muscleGroup:e.muscleGroup,
-      plannedSets:e.plannedSets, plannedReps:e.plannedReps, plannedLoad:e.plannedLoad,
+      plannedSummary: plannedSummary(e.plannedSets),
       completed:false,
-      sets: Array.from({length:e.plannedSets},(_,i)=>({setNumber:i+1, weight:e.plannedLoad||'', reps:e.plannedReps, notes:''}))
+      sets: e.plannedSets.map((ps,i)=>({setNumber:i+1, weight: ps.weight===''||ps.weight==null?'':ps.weight, reps:ps.reps, notes:''}))
     })),
+  };
+  persistActiveSession();
+  navigate('session');
+}
+
+function startEmptySession(){
+  closeModal();
+  state.activeSession = {
+    workoutId: null,
+    workoutName: 'Treino livre',
+    startTime: new Date().toISOString(),
+    exercises: [],
   };
   persistActiveSession();
   navigate('session');
@@ -748,12 +792,16 @@ function renderSessionRunner(){
 function renderSessionExercises(){
   const wrap = document.getElementById('session-exercises');
   const s = state.activeSession;
+  if(!s.exercises.length){
+    wrap.innerHTML = `<div class="empty"><div class="big">🆓</div>Nenhum exercício ainda. Use "+ Adicionar exercício" acima.</div>`;
+    return;
+  }
   wrap.innerHTML = s.exercises.map((ex,ei)=>`
     <div class="ex-card ${ex.completed?'done':''}" id="ex-card-${ei}">
       <div class="head">
         <div>
           <strong>${escapeHtml(ex.name)}</strong>
-          <div class="planned">${escapeHtml(ex.muscleGroup)} · planejado ${ex.plannedSets}x${ex.plannedReps}${ex.plannedLoad?' · '+ex.plannedLoad+'kg':''}</div>
+          <div class="planned">${escapeHtml(ex.muscleGroup)}${ex.plannedSummary? ' · planejado '+escapeHtml(ex.plannedSummary):''}</div>
         </div>
         <div class="row" style="gap:8px;">
           <label style="display:flex;align-items:center;gap:6px;text-transform:none;font-size:12px;">
@@ -786,7 +834,7 @@ function updateSet(ei,si,field,value){
 function addSet(ei){
   const ex = state.activeSession.exercises[ei];
   const last = ex.sets[ex.sets.length-1];
-  ex.sets.push({setNumber:ex.sets.length+1, weight:last?last.weight:'', reps:last?last.reps:ex.plannedReps, notes:''});
+  ex.sets.push({setNumber:ex.sets.length+1, weight:last?last.weight:'', reps:last?last.reps:10, notes:''});
   persistActiveSession();
   renderSessionExercises();
 }
@@ -852,9 +900,9 @@ function addLibraryExerciseToSession(exerciseId){
   if(!e) return;
   state.activeSession.exercises.push({
     exerciseId: e.id, name:e.name, muscleGroup:e.muscleGroup,
-    plannedSets:e.plannedSets, plannedReps:e.plannedReps, plannedLoad:e.plannedLoad,
+    plannedSummary: plannedSummary(e.plannedSets),
     completed:false, adHoc:false,
-    sets: Array.from({length:e.plannedSets},(_,i)=>({setNumber:i+1, weight:e.plannedLoad||'', reps:e.plannedReps, notes:''}))
+    sets: e.plannedSets.map((ps,i)=>({setNumber:i+1, weight: ps.weight===''||ps.weight==null?'':ps.weight, reps:ps.reps, notes:''}))
   });
   persistActiveSession();
   closeModal();
@@ -869,7 +917,7 @@ function addCustomExerciseToSession(){
   const reps = parseInt(document.getElementById('adhoc-reps').value)||1;
   state.activeSession.exercises.push({
     exerciseId: uid(), name, muscleGroup: document.getElementById('adhoc-muscle').value,
-    plannedSets:sets, plannedReps:reps, plannedLoad:'',
+    plannedSummary: plannedSummary(Array.from({length:sets},()=>({reps,weight:''}))),
     completed:false, adHoc:true,
     sets: Array.from({length:sets},(_,i)=>({setNumber:i+1, weight:'', reps, notes:''}))
   });
@@ -1231,7 +1279,7 @@ function buildXML(payload){
   payload.workouts.forEach(w=>{
     xml += `    <Treino id="${xmlEscape(w.id)}">\n      <Nome>${xmlEscape(w.name)}</Nome>\n      <Categoria>${xmlEscape(w.category)}</Categoria>\n      <Descricao>${xmlEscape(w.description)}</Descricao>\n      <Exercicios>\n`;
     w.exercises.forEach(e=>{
-      xml += `        <Exercicio id="${xmlEscape(e.id)}">\n          <Nome>${xmlEscape(e.name)}</Nome>\n          <GrupoMuscular>${xmlEscape(e.muscleGroup)}</GrupoMuscular>\n          <SeriesPlanejadas>${xmlEscape(e.plannedSets)}</SeriesPlanejadas>\n          <RepeticoesPlanejadas>${xmlEscape(e.plannedReps)}</RepeticoesPlanejadas>\n          <CargaPlanejada>${xmlEscape(e.plannedLoad)}</CargaPlanejada>\n          <Observacoes>${xmlEscape(e.notes)}</Observacoes>\n        </Exercicio>\n`;
+      xml += `        <Exercicio id="${xmlEscape(e.id)}">\n          <Nome>${xmlEscape(e.name)}</Nome>\n          <GrupoMuscular>${xmlEscape(e.muscleGroup)}</GrupoMuscular>\n          <SeriesPlanejadas>\n${e.plannedSets.map((ps,i)=>`            <Serie numero="${i+1}" repeticoes="${xmlEscape(ps.reps)}" peso="${xmlEscape(ps.weight)}"/>`).join('\n')}\n          </SeriesPlanejadas>\n          <Observacoes>${xmlEscape(e.notes)}</Observacoes>\n        </Exercicio>\n`;
     });
     xml += `      </Exercicios>\n    </Treino>\n`;
   });
@@ -1259,8 +1307,8 @@ function exportXLSX(payload){
   payload.workouts.forEach(w=> treinosRows.push([w.id,w.name,w.category,w.description]));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(treinosRows), 'Treinos');
 
-  const exRows = [['ID','TreinoID','Nome','GrupoMuscular','SériesPlanejadas','RepetiçõesPlanejadas','CargaPlanejada','Observações']];
-  payload.workouts.forEach(w=> w.exercises.forEach(e=> exRows.push([e.id,w.id,e.name,e.muscleGroup,e.plannedSets,e.plannedReps,e.plannedLoad,e.notes])));
+  const exRows = [['ID','TreinoID','Nome','GrupoMuscular','SériesPlanejadas','PlanoDeSéries (reps×peso)','Observações']];
+  payload.workouts.forEach(w=> w.exercises.forEach(e=> exRows.push([e.id,w.id,e.name,e.muscleGroup,e.plannedSets.length,e.plannedSets.map(ps=>`${ps.reps}×${ps.weight||'-'}kg`).join(' / '),e.notes])));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(exRows), 'Exercicios');
 
   const gymRows = [['ID','Nome','Cidade','Observações']];
@@ -1316,6 +1364,7 @@ function openImportConfirm(data){
 async function applyImport(mode){
   const data = _pendingImportData;
   if(!data) return;
+  normalizeWorkoutsArray(data.workouts);
   if(mode==='replace'){
     if(!confirm('Isso vai apagar TODOS os dados atuais e substituir pelo backup. Confirma?')) return;
     await Data.clear('gyms'); await Data.clear('workouts'); await Data.clear('sessions');
@@ -1368,6 +1417,31 @@ function initTheme(){
 }
 
 /* ============================== INIT ============================= */
+/* Fichas salvas em versões antigas do app tinham um único peso/reps para
+   todo o exercício (plannedSets: número, plannedReps, plannedLoad). Aqui a
+   gente converte isso, uma vez só, para a lista de séries independentes. */
+function normalizeWorkoutsArray(workouts){
+  let changed = false;
+  workouts.forEach(w=>{
+    (w.exercises||[]).forEach(ex=>{
+      if(!Array.isArray(ex.plannedSets)){
+        const count = ex.plannedSets || 1;
+        const reps = ex.plannedReps || 10;
+        const weight = ex.plannedLoad || '';
+        ex.plannedSets = Array.from({length:count},()=>({reps,weight}));
+        delete ex.plannedReps; delete ex.plannedLoad;
+        changed = true;
+      }
+    });
+  });
+  return changed;
+}
+async function migrateOldWorkouts(){
+  if(normalizeWorkoutsArray(state.workouts)){
+    await Data.putAll('workouts', state.workouts);
+  }
+}
+
 async function init(){
   buildViewShells();
   renderTabs();
@@ -1376,6 +1450,7 @@ async function init(){
     state.gyms = await Data.getAll('gyms');
     state.workouts = await Data.getAll('workouts');
     state.sessions = await Data.getAll('sessions');
+    await migrateOldWorkouts();
   }catch(err){
     toast('Erro ao abrir o banco de dados local.','error');
     console.error(err);
